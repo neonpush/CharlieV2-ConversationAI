@@ -1,0 +1,26 @@
+# Core FastAPI dependencies
+fastapi==0.109.0           # Web framework
+uvicorn[standard]==0.27.0  # ASGI server to run FastAPI
+pydantic==2.5.3            # Data validation
+pydantic-settings==2.1.0   # Settings management from environment
+
+# Database dependencies
+sqlalchemy==2.0.25         # ORM for database
+alembic==1.13.1           # Database migrations
+asyncpg==0.29.0           # Async PostgreSQL driver
+psycopg2-binary==2.9.9    # PostgreSQL adapter
+
+# External APIs
+twilio==8.11.0            # Twilio SDK for phone calls
+httpx==0.25.2             # Modern HTTP client for ElevenLabs API
+
+# WebSocket support (for ElevenLabs)
+websockets==12.0          # WebSocket client
+
+# Utilities
+python-dotenv==1.0.0      # Load .env files in development
+python-multipart==0.0.6   # For form data parsing
+requests==2.31.0          # HTTP library for testing
+
+# Testing
+pytest==8.2.1
