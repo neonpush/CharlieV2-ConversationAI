@@ -1,0 +1,18 @@
+{
+  "name": "Max Thompson",
+  "email": "emma.thompson@gmail.com",
+  "phone": "+447599434463",
+  "postcode": "SW3 4LJ",
+  "budget": 2200,
+  "moveInDate": "March 15th, 2025",
+  "occupation": "Marketing Manager",
+  "yearlyWage": 45000,
+  "contractLength": "TWELVE_MONTHS",
+  "propertyAddress": "45 Brompton Road, London SW3 4LJ",
+  "bedroom_count": 2,
+  "bathroom_count": 1,
+  "property_cost": 2400,
+  "deposit_cost": 2400,
+  "is_bills_included": false,
+  "availability_at": "Available from March 1st, 2025"
+}

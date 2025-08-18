@@ -52,10 +52,18 @@ class Settings(BaseSettings):
     webhook_base_url: Optional[str] = None  # Base URL for webhooks (ngrok)
     user_phone_number: Optional[str] = None  # Test phone number
     
+    # OpenAI configuration for transcript analysis
+    openai_api_key: Optional[str] = None  # OpenAI API key for analyzing transcripts
+    openai_model: str = "gpt-5-2025-08-07"  # Model to use for analysis
+    analyzer_confidence_threshold: float = 0.7  # Min confidence to auto-update fields
+    
     # Application settings with defaults
     debug: bool = False  # Enable debug mode (more logs, show docs)
     port: int = 8000    # Port to run the server on
     auto_call_new_leads: bool = True  # Automatically call new leads when created
+    
+    # Railway specific
+    railway_environment: Optional[str] = None  # Railway environment name
     
     class Config:
         """

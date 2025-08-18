@@ -1,0 +1,18 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "always"
+
+[[services]]
+name = "web"
+source = "."
+
+[services.web]
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+
+[[services]]
+name = "postgres"
+source = "postgres:16"

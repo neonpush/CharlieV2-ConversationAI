@@ -88,8 +88,11 @@ class Lead(Base):
     # Property details
     address_line_1 = Column(String(255), nullable=True)  # Street address
     bedroom_count = Column(Integer, nullable=True)  # Number of bedrooms
+    bathroom_count = Column(Integer, nullable=True)  # Number of bathrooms
     availability_at = Column(String(100), nullable=True)  # When property is available
     property_cost = Column(Integer, nullable=True)  # Actual property price
+    deposit_cost = Column(Integer, nullable=True)  # Security deposit amount
+    is_bills_included = Column(Boolean, nullable=True)  # Whether bills are included in rent
     
     # Contract preference with constraint
     contract_length = Column(
@@ -119,6 +122,13 @@ class Lead(Base):
     viewing_time = Column(String(50), nullable=True)
     viewing_notes = Column(Text, nullable=True)
     property_address = Column(Text, nullable=True)
+    
+    # Lead availability information
+    # Multiple availability slots stored as JSON or text
+    availability_slots = Column(Text, nullable=True)  # JSON string of availability times
+    availability_notes = Column(Text, nullable=True)  # Additional notes about availability
+    availability_confirmed = Column(Boolean, default=False, nullable=False)  # Has lead confirmed availability?
+    landlord_approval_pending = Column(Boolean, default=False, nullable=False)  # Waiting for landlord approval?
     
     # Call transcript from ElevenLabs
     call_transcript = Column(Text, nullable=True)

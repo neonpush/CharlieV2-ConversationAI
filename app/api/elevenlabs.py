@@ -5,13 +5,14 @@ Returns a variables map that includes first_message and system_prompt
 so agents that template these values have them available as dynamic vars.
 """
 
-from fastapi import APIRouter, Request, Depends, HTTPException, status
+from fastapi import APIRouter, Request, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Any, Dict, Optional
 from app.db.database import get_db
 from app.services.lead_service import LeadService
 from app.services.call_service import CallService
 from app.services.elevenlabs_service import ElevenLabsService
+from app.services.simple_analyzer import analyzer
 from app.schemas.call import CallTranscriptUpdate
 from app.core.config import settings
 import logging
@@ -25,6 +26,157 @@ from app.db.models import Lead as LeadModel
 router = APIRouter(prefix="/elevenlabs", tags=["elevenlabs"])
 
 logger = logging.getLogger(__name__)
+
+
+def trigger_analysis_if_possible(
+    background_tasks: BackgroundTasks, 
+    call_service: CallService,
+    conversation_id: str, 
+    transcript: str,
+    lead_id: Optional[int] = None
+):
+    """
+    Helper to trigger transcript analysis if we can determine the lead_id.
+    """
+    try:
+        # If lead_id not provided, try to get it from the call
+        if not lead_id:
+            call = call_service.get_call_by_conversation_id(conversation_id)
+            if call and call.lead_id:
+                lead_id = call.lead_id
+            else:
+                logger.warning(f"Cannot trigger analysis - no lead_id found for conversation {conversation_id}")
+                return
+        
+        # Trigger background analysis
+        background_tasks.add_task(
+            analyze_transcript_background,
+            lead_id=lead_id,
+            transcript=transcript,
+            conversation_id=conversation_id
+        )
+        
+        logger.info(f"🚀 Queued transcript analysis:")
+        logger.info(f"  👤 Lead ID: {lead_id}")
+        logger.info(f"  💬 Conversation ID: {conversation_id}")
+        logger.info(f"  📝 Transcript length: {len(transcript)} chars")
+        
+    except Exception as e:
+        logger.error(f"Failed to queue transcript analysis: {str(e)}")
+
+
+def analyze_transcript_background(lead_id: int, transcript: str, conversation_id: str):
+    """
+    Background task to analyze transcript and update lead.
+    
+    This runs after the webhook has already responded, so it won't delay
+    the ElevenLabs webhook response.
+    """
+    try:
+        logger.info(f"🚀 Starting background transcript analysis:")
+        logger.info(f"  👤 Lead ID: {lead_id}")
+        logger.info(f"  💬 Conversation ID: {conversation_id}")
+        logger.info(f"  📝 Transcript length: {len(transcript)} characters")
+        
+        # Get a new database session for the background task
+        from app.db.database import SessionLocal
+        db = SessionLocal()
+        
+        try:
+            # Get the lead with full context
+            lead_service = LeadService(db)
+            lead = lead_service.get_lead(lead_id)
+            
+            if not lead:
+                logger.warning(f"❌ Lead {lead_id} not found for transcript analysis")
+                return
+            
+            # Log lead context
+            logger.info(f"📊 Lead context loaded:")
+            logger.info(f"  👤 Name: {lead.name or 'Unknown'}")
+            logger.info(f"  📞 Phone: {lead.phone or 'Unknown'}")
+            logger.info(f"  🎯 Current phase: {lead.phase.value if lead.phase else 'Unknown'}")
+            logger.info(f"  ✅ Confirmations: {sum([
+                lead.name_confirmed,
+                lead.budget_confirmed,
+                lead.move_in_date_confirmed,
+                lead.occupation_confirmed,
+                lead.yearly_wage_confirmed,
+                lead.contract_length_confirmed
+            ])}/6")
+            
+            # Convert lead to context for analyzer
+            lead_context = analyzer.lead_to_context(lead)
+            
+            # Analyze the transcript
+            logger.info(f"Analyzing transcript for lead {lead_id} - {len(transcript)} characters")
+            analysis_result = analyzer.analyze_transcript(transcript, lead_context)
+            
+            # Check for analysis errors
+            if "error" in analysis_result:
+                logger.error(f"Analysis failed for lead {lead_id}: {analysis_result['error']}")
+                return
+            
+            # Extract database updates
+            updates = analyzer.extract_updates_for_lead(analysis_result)
+            
+            if not updates:
+                logger.info(f"No high-confidence updates found for lead {lead_id}")
+                return
+            
+            # Apply updates to the lead
+            logger.info(f"💾 Applying {len(updates)} database updates:")
+            
+            # Update the lead fields and log changes
+            for field, value in updates.items():
+                old_value = getattr(lead, field, None)
+                setattr(lead, field, value)
+                logger.info(f"  📝 {field}: {old_value} → {value}")
+            
+            # Commit the updates
+            db.commit()
+            logger.info(f"✅ Database updated successfully")
+            
+            # Check if lead should progress to next phase
+            old_phase = lead.phase
+            phase_info = lead_service.check_phase_requirements(lead)
+            
+            logger.info(f"🎯 Phase progression check:")
+            logger.info(f"  📍 Current phase: {old_phase.value}")
+            logger.info(f"  🔄 Can progress: {phase_info.can_progress}")
+            logger.info(f"  ➡️ Next phase: {phase_info.next_phase.value if phase_info.next_phase else 'None'}")
+            
+            if phase_info.can_progress:
+                lead_service.update_lead_phase(lead)
+                logger.info(f"🎉 Lead {lead_id} progressed: {old_phase.value} → {phase_info.next_phase.value}")
+            else:
+                if phase_info.missing_fields:
+                    logger.info(f"  ❌ Missing fields: {', '.join(phase_info.missing_fields)}")
+                if phase_info.unconfirmed_fields:
+                    logger.info(f"  ❌ Unconfirmed fields: {', '.join(phase_info.unconfirmed_fields)}")
+            
+            # Final summary
+            call_outcome = analysis_result.get("call_outcome", {})
+            viewing = analysis_result.get("viewing", {})
+            availability = analysis_result.get("availability", {})
+            
+            logger.info(f"🏁 Background task completed successfully:")
+            logger.info(f"  📞 Call successful: {call_outcome.get('successful', False)}")
+            logger.info(f"  👁️ Viewing booked: {viewing.get('booked', False)}")
+            logger.info(f"  📅 Availability collected: {availability.get('slots_provided', False)}")
+            logger.info(f"  💾 Updates applied: {len(updates)}")
+            logger.info(f"  🎯 Phase changed: {phase_info.can_progress}")
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"❌ Background transcript analysis failed for lead {lead_id}:")
+        logger.error(f"  🔍 Error: {str(e)}")
+        logger.error(f"  📝 Transcript preview: {transcript[:200]}...")
+        # Log stack trace for debugging
+        import traceback
+        logger.error(f"  📚 Stack trace: {traceback.format_exc()}")
 
 
 def _verify_signature(raw_body: bytes, header_val: Optional[str]) -> bool:
@@ -231,44 +383,83 @@ async def personalization(request: Request, db: Session = Depends(get_db)) -> Di
             caller_phone = None
             called_phone = None
             
-            # Extract caller phone - check all possible locations
+            # Extract both caller and called numbers
             caller_phone = (
                 payload.get("caller_id") or
                 payload.get("from") or
                 payload.get("caller_number")
             )
             
+            called_phone = (
+                payload.get("called_number") or
+                payload.get("to") or
+                payload.get("called_id")
+            )
+            
             # Also check nested data if no top-level phone found
-            if not caller_phone:
+            if not caller_phone or not called_phone:
                 data = payload.get("data", {})
                 if isinstance(data, dict):
-                    caller_phone = (
-                        data.get("caller_id") or 
-                        data.get("from") or
-                        data.get("caller_number") or
-                        data.get("user_phone")
-                    )
+                    if not caller_phone:
+                        caller_phone = (
+                            data.get("caller_id") or 
+                            data.get("from") or
+                            data.get("caller_number") or
+                            data.get("user_phone")
+                        )
+                    if not called_phone:
+                        called_phone = (
+                            data.get("called_number") or
+                            data.get("to") or
+                            data.get("called_id")
+                        )
             
-            logger.info("Inbound call detected - caller: %s, identifier: %s", caller_phone, call_identifier)
+            # Determine call direction and appropriate phone number to look up
+            # Inbound: Someone calls your ElevenLabs number → use caller_phone
+            # Outbound: You call someone → use called_phone
             
-            if caller_phone:
+            lookup_phone = None
+            call_direction = "unknown"
+            
+            # If called_number is your ElevenLabs number, it's an inbound call
+            if called_phone and settings.elevenlabs_agent_phone_number_id and called_phone == settings.elevenlabs_agent_phone_number_id:
+                lookup_phone = caller_phone
+                call_direction = "inbound"
+                logger.info("Inbound call detected - caller: %s calling your number: %s, identifier: %s", 
+                           caller_phone, called_phone, call_identifier)
+            # If caller_id is your ElevenLabs number, it's an outbound call
+            elif caller_phone and settings.elevenlabs_agent_phone_number_id and caller_phone == settings.elevenlabs_agent_phone_number_id:
+                lookup_phone = called_phone
+                call_direction = "outbound"
+                logger.info("Outbound call detected - you (%s) calling: %s, identifier: %s", 
+                           caller_phone, called_phone, call_identifier)
+            # Fallback: If we can't determine direction, assume inbound and use caller
+            else:
+                lookup_phone = caller_phone
+                call_direction = "inbound_assumed"
+                logger.info("Call direction unclear - assuming inbound call from: %s, identifier: %s", 
+                           caller_phone, call_identifier)
+                logger.info("Debug: caller_phone=%s, called_phone=%s, your_number=%s", 
+                           caller_phone, called_phone, settings.elevenlabs_agent_phone_number_id)
+            
+            if lookup_phone:
                 # Look up existing lead by phone
-                lead = call_service._find_lead_by_phone(caller_phone)
+                lead = call_service._find_lead_by_phone(lookup_phone)
                 
                 if lead:
-                    logger.info("Found existing lead %s for inbound caller %s", lead.id, caller_phone)
+                    logger.info("Found existing lead %s for %s call with %s", lead.id, call_direction, lookup_phone)
                 else:
-                    # Create new lead for unknown inbound caller  
-                    logger.info("Creating new lead for unknown inbound caller: %s", caller_phone)
+                    # Create new lead for unknown caller  
+                    logger.info("Creating new lead for unknown %s caller: %s", call_direction, lookup_phone)
                     from app.services.lead_service import LeadService
                     from app.schemas.lead import LeadCreate
                     
                     lead_service = LeadService(db)
                     lead = lead_service.create_lead(LeadCreate(
-                        phone=caller_phone,
-                        name="Unknown Caller"
+                        phone=lookup_phone,
+                        name="Unknown Caller" if call_direction.startswith("inbound") else "Outbound Call"
                     ))
-                    logger.info("Created new lead %s for inbound caller", lead.id)
+                    logger.info("Created new lead %s for %s caller", lead.id, call_direction)
                 
                 # Create call record for this inbound conversation
                 # Use call_identifier (could be conversation_id or call_sid)
@@ -404,7 +595,11 @@ async def personalization_get() -> Dict[str, str]:
 
 
 @router.post("/transcript")
-async def transcript_webhook(request: Request, db: Session = Depends(get_db)) -> Dict[str, str]:
+async def transcript_webhook(
+    request: Request, 
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+) -> Dict[str, str]:
     """
     Receive post-call transcript from ElevenLabs and store it on the lead.
     Expected JSON: { "leadId": "5", "transcript": "..." }
@@ -575,6 +770,15 @@ async def transcript_webhook(request: Request, db: Session = Depends(get_db)) ->
         
         if success:
             logger.info("Transcript stored for conversation_id %s - %d chars", conversation_id, len(transcript_text))
+            
+            # Trigger background transcript analysis
+            trigger_analysis_if_possible(
+                background_tasks=background_tasks,
+                call_service=call_service,
+                conversation_id=conversation_id,
+                transcript=transcript_text
+            )
+            
             return {"status": "ok"}
         
         # STRATEGY 2: Use phone number to find lead, then find their latest call
@@ -609,6 +813,16 @@ async def transcript_webhook(request: Request, db: Session = Depends(get_db)) ->
                     ))
                     logger.info("Updated call %s for lead %s with transcript via phone correlation", 
                                latest_call.id, lead.id)
+                    
+                    # Trigger background transcript analysis
+                    trigger_analysis_if_possible(
+                        background_tasks=background_tasks,
+                        call_service=call_service,
+                        conversation_id=conversation_id,
+                        transcript=transcript_text,
+                        lead_id=lead.id  # We have the lead_id here
+                    )
+                    
                     return {"status": "updated_by_phone"}
                 else:
                     logger.warning("No call without transcript found for lead %s", lead.id)
@@ -646,6 +860,16 @@ async def transcript_webhook(request: Request, db: Session = Depends(get_db)) ->
                     status="completed"
                 ))
                 logger.info("Updated call %s: call_sid -> conversation_id, stored transcript", call.id)
+                
+                # Trigger background transcript analysis
+                trigger_analysis_if_possible(
+                    background_tasks=background_tasks,
+                    call_service=call_service,
+                    conversation_id=conversation_id,
+                    transcript=transcript_text,
+                    lead_id=call.lead_id  # We have the lead_id from the call
+                )
+                
                 return {"status": "updated_and_stored"}
         
         # If no call_sid found or call not found by call_sid, try time-based correlation
@@ -670,6 +894,16 @@ async def transcript_webhook(request: Request, db: Session = Depends(get_db)) ->
                 status="completed"
             ))
             logger.info("Updated call %s with transcript and conversation_id", recent_call.id)
+            
+            # Trigger background transcript analysis
+            trigger_analysis_if_possible(
+                background_tasks=background_tasks,
+                call_service=call_service,
+                conversation_id=conversation_id,
+                transcript=transcript_text,
+                lead_id=recent_call.lead_id  # We have the lead_id from the call
+            )
+            
             return {"status": "updated_recent_call"}
         
         # Last resort: Try to find call by caller phone number
@@ -702,6 +936,16 @@ async def transcript_webhook(request: Request, db: Session = Depends(get_db)) ->
                         status="completed"
                     ))
                     logger.info("Updated call %s with transcript using phone correlation", call.id)
+                    
+                    # Trigger background transcript analysis
+                    trigger_analysis_if_possible(
+                        background_tasks=background_tasks,
+                        call_service=call_service,
+                        conversation_id=conversation_id,
+                        transcript=transcript_text,
+                        lead_id=lead.id  # We have the lead_id here
+                    )
+                    
                     return {"status": "updated_by_phone"}
         
         logger.warning("No call record found by any method for conversation_id %s", conversation_id)

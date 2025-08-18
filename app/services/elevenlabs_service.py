@@ -15,6 +15,7 @@ import json
 from urllib.parse import urlencode
 import httpx
 from urllib.parse import urlparse, parse_qs
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,17 @@ class ElevenLabsService:
         # Build flat dynamic variables
         # ElevenLabs supports simple key-value pairs
         phase_str = lead.phase.value if hasattr(lead.phase, "value") else (lead.phase or "")
+        
+        # Get current date and time for context
+        now = datetime.now()
 
         variables = {
+            # Current context for time-sensitive conversations
+            "current_date": now.strftime("%A, %B %d, %Y"),  # "Monday, January 20, 2025"
+            "current_time": now.strftime("%I:%M %p"),       # "2:30 PM"
+            "current_day": now.strftime("%A"),              # "Monday"
+            "current_hour": str(now.hour),                  # "14" (24-hour format for logic)
+            
             # Identity
             "lead_id": str(lead.id),
             "customer_name": lead.name or "there",
@@ -106,9 +116,13 @@ class ElevenLabsService:
         """
         return (
             "You are Charlie from Lobby, a real estate agent. Check {lead_phase} to understand the conversation goal.\n\n"
+            "CURRENT CONTEXT:\n"
+            "- Today's date: {current_date}\n"
+            "- Current time: {current_time}\n"
+            "- Day of week: {current_day}\n\n"
             "Phase-specific behavior:\n"
             "- CONFIRM_INFO: First confirm/collect {phase_missing_fields}. Once all information is confirmed, proceed to book a viewing.\n"
-            "- BOOKING_VIEWING: Offer slots from {available_viewing_slots}\n"
+            "- BOOKING_VIEWING: First ask for their availability (multiple time slots), then offer specific viewing times from {available_viewing_slots}\n"
             "- VIEWING_BOOKED: Viewing is on {viewing_date} at {viewing_time}\n\n"
             "IMPORTANT: After your initial greeting, WAIT for the person to respond before proceeding with any details or questions.\n\n"
             "NATURAL CONVERSATION RULES:\n"
@@ -131,6 +145,11 @@ class ElevenLabsService:
             "- Flexible and adaptive—adjust to how the caller shares information\n\n"
             "IMPORTANT: After your initial greeting and request to confirm details, WAIT for permission. If they say yes, proceed. If they're busy, offer to call back later.\n\n"
             "VIEWING HOURS: Viewings can ONLY be booked between 9:00 AM and 5:00 PM on weekdays (Monday–Friday). Do not offer or accept viewing times outside these hours.\n\n"
+            "TIME-SENSITIVE GUIDELINES:\n"
+            "- Use current time/date context for natural scheduling (\"later today\", \"tomorrow\", \"this week\")\n"
+            "- If it's after business hours, suggest times for the next business day\n"
+            "- Be specific about dates when booking (don't just say \"Thursday\" - say \"this Thursday\" or \"next Thursday\")\n"
+            "- Consider the customer's timeline relative to today's date\n\n"
             "CRITICAL PROPERTY REFERENCE RULES:\n"
             "- On first mention say: \"the property at {property_address}\"\n"
             "- If it's a {property_bedrooms} property at {property_monthly_cost}/month, say: \"that's £{price_per_room} per bedroom\"\n\n"
@@ -206,7 +225,16 @@ class ElevenLabsService:
         # Phase string normalization
         phase_value = lead.phase.value if hasattr(lead.phase, "value") else as_str(lead.phase)
 
+        # Get current date and time for context
+        now = datetime.now()
+        
         return {
+            # Current context for time-sensitive scheduling
+            "current_date": now.strftime("%A, %B %d, %Y"),  # "Monday, January 20, 2025"
+            "current_time": now.strftime("%I:%M %p"),       # "2:30 PM"
+            "current_day": now.strftime("%A"),              # "Monday"
+            
+            # Existing variables
             "lead_phase": phase_value or "NEW",
             "phase_missing_fields": ", ".join(missing_fields) if missing_fields else "(none)",
             "available_viewing_slots": "weekdays 9:00–17:00",
@@ -466,7 +494,7 @@ class ElevenLabsService:
 
         messages = {
             "CONFIRM_INFO": f"Hi {name}! I'm Charlie calling from Lobby about the property you enquired about. I need to confirm a few details before we can book your viewing. Do you have a moment?",
-            "BOOKING_VIEWING": f"Hello {name}! I'm calling to help you schedule a property viewing. When would work best for you?",
+            "BOOKING_VIEWING": f"Hello {name}! I'm calling to schedule your property viewing. Can you tell me when you're generally available this week?",
             "VIEWING_BOOKED": f"Hi {name}, I'm calling to confirm your viewing on {lead.viewing_date or 'the scheduled date'}.",
             "COMPLETED": f"Hello {name}, thank you for your time. Is there anything else I can help you with?",
         }
@@ -476,10 +504,18 @@ class ElevenLabsService:
     def build_unknown_caller_variables(self, caller_phone: str) -> Dict[str, Any]:
         """Build variables for unknown callers (not in our system)"""
         
+        # Get current time context
+        now = datetime.now()
+        
         first_message = "Hello! I'm Charlie from Lobby. How can I help you today?"
         
         # Default system prompt for unknown callers - you can edit this
-        system_prompt = """You are Charlie from Lobby, a helpful real estate assistant.
+        system_prompt = f"""You are Charlie from Lobby, a helpful real estate assistant.
+
+CURRENT CONTEXT:
+- Today's date: {now.strftime("%A, %B %d, %Y")}
+- Current time: {now.strftime("%I:%M %p")}
+- Day of week: {now.strftime("%A")}
 
 You're speaking with someone who called our number but isn't in our system yet.
 
@@ -488,12 +524,22 @@ Your role:
 - Ask how you can help them today
 - If they're interested in property rentals, collect their basic details
 - If they're calling about something else, try to assist or direct them appropriately
+- Use the current time context for natural conversation and scheduling
+
+VIEWING HOURS: Viewings can ONLY be booked between 9:00 AM and 5:00 PM on weekdays (Monday–Friday).
 
 Keep responses brief and natural. Wait for them to explain why they're calling before proceeding.
 
 Important: This caller is not in our current lead system, so treat this as a general inquiry call."""
         
         variables = {
+            # Current context
+            "current_date": now.strftime("%A, %B %d, %Y"),
+            "current_time": now.strftime("%I:%M %p"),
+            "current_day": now.strftime("%A"),
+            "current_hour": str(now.hour),
+            
+            # Call info
             "first_message": first_message,
             "system_prompt": system_prompt,
             "customer_phone": caller_phone,

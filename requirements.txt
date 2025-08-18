@@ -13,6 +13,7 @@ psycopg2-binary==2.9.9    # PostgreSQL adapter
 # External APIs
 twilio==8.11.0            # Twilio SDK for phone calls
 httpx==0.25.2             # Modern HTTP client for ElevenLabs API
+openai==1.12.0            # OpenAI API for transcript analysis
 
 # WebSocket support (for ElevenLabs)
 websockets==12.0          # WebSocket client
@@ -21,6 +22,9 @@ websockets==12.0          # WebSocket client
 python-dotenv==1.0.0      # Load .env files in development
 python-multipart==0.0.6   # For form data parsing
 requests==2.31.0          # HTTP library for testing
+
+# Production server
+gunicorn==21.2.0          # Production WSGI server (backup to uvicorn)
 
 # Testing
 pytest==8.2.1
